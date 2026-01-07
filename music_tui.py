@@ -196,8 +196,10 @@ def safe_addstr(stdscr, y: int, x: int, s: str, attr: int = 0):
     if y < 0 or y >= h or x >= w:
         return
     s = s[: max(0, w - x - 1)]
+    #terminal default fg/bg below
+    base = curses.color_pair(1) 
     try:
-        stdscr.addstr(y, x, s, attr)
+        stdscr.addstr(y, x, s, attr | base)
     except curses.error:
         pass
 
@@ -217,6 +219,17 @@ def draw_progress_bar(stdscr, y: int, x: int, width: int, pos: float, dur: float
 
 def run_tui(stdscr):
     curses.curs_set(0)
+    curses.start_color()
+    curses.use_default_colors()
+
+    # Pair 1 = terminal defaults (fg + bg)
+    curses.init_pair(1, -1, -1)
+    BASE = curses.color_pair(1)
+
+    # Use terminal theme background when clearing/redrawing
+    stdscr.bkgd(' ', BASE)
+    stdscr.bkgdset(' ', BASE)
+    stdscr.erase()
     stdscr.nodelay(True)
     stdscr.keypad(True)
 
