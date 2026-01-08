@@ -7,6 +7,8 @@ This project uses **Python**, **curses**, and **AppleScript (osascript)** to con
 
 ---
 
+![music_tui image](./images/music_tui.png)
+
 ## Features
 
 - Full-screen ncurses TUI
