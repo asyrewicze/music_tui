@@ -135,6 +135,30 @@ def music_cmd_toggle_play_pause(np: NowPlaying):
         music_cmd_play()
 
 
+# --- Shuffle ------------------------------------------------------------------
+
+def music_get_shuffle_enabled() -> bool:
+    """
+    Returns True if shuffle is enabled, else False.
+    AppleScript returns 'true'/'false'.
+    """
+    out = run_osascript('tell application "Music" to get shuffle enabled')
+    return out.strip().lower() == "true"
+
+
+def music_cmd_toggle_shuffle():
+    """
+    Toggle Apple Music shuffle enabled on/off.
+    """
+    script = r'''
+tell application "Music"
+    set shuffle enabled to not (shuffle enabled)
+    return shuffle enabled as string
+end tell
+'''.strip()
+    run_osascript(script)
+
+
 # --- Playlists ----------------------------------------------------------------
 
 def get_playlists() -> List[str]:
@@ -196,8 +220,8 @@ def safe_addstr(stdscr, y: int, x: int, s: str, attr: int = 0):
     if y < 0 or y >= h or x >= w:
         return
     s = s[: max(0, w - x - 1)]
-    #terminal default fg/bg below
-    base = curses.color_pair(1) 
+    # terminal default fg/bg below
+    base = curses.color_pair(1)
     try:
         stdscr.addstr(y, x, s, attr | base)
     except curses.error:
@@ -241,7 +265,7 @@ def run_tui(stdscr):
     last_poll = 0.0
     now_playing = NowPlaying()
 
-    status_msg = "q quit | space play/pause | s stop | n next | p prev | l playlists"
+    status_msg = "q quit | space play/pause | s stop | n next | p prev | f shuffle | l playlists"
 
     while True:
         # Poll now-playing
@@ -264,6 +288,8 @@ def run_tui(stdscr):
                     music_cmd_next()
                 elif ch in (ord("p"), ord("P")):
                     music_cmd_prev()
+                elif ch in (ord("f"), ord("F")):
+                    music_cmd_toggle_shuffle()
                 elif ch in (ord("l"), ord("L")):
                     playlists = get_playlists()
                     mode = Mode.PLAYLISTS
@@ -303,8 +329,9 @@ def run_tui(stdscr):
             safe_addstr(stdscr, 2, 2, "Now Playing:", curses.A_BOLD)
             safe_addstr(stdscr, 3, 4, np_line)
 
-            # State + times
-            safe_addstr(stdscr, 5, 2, f"State: {now_playing.state}")
+            # State + shuffle + times
+            shuffle = "on" if music_get_shuffle_enabled() else "off"
+            safe_addstr(stdscr, 5, 2, f"State: {now_playing.state}    Shuffle: {shuffle}")
 
             dur = now_playing.duration
             pos = now_playing.position
