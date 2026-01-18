@@ -36,6 +36,12 @@ This project uses **Python**, **curses**, and **AppleScript (osascript)** to con
 
 No third-party Python libraries are required.
 
+**NOTE:** Python can be installed on MacOS via homebrew. For example, if you wanted to install Python version 3.13:
+
+```bash
+brew install python@3.13
+```
+
 ---
 
 ## Installation
@@ -43,7 +49,7 @@ No third-party Python libraries are required.
 Clone the repository:
 
 ```bash
-git clone https://github.com/<your-username>/music_tui.git
+git clone https://github.com/asyrewicze/music_tui.git
 cd music_tui
 ```
 
@@ -134,7 +140,6 @@ This approach uses Apple’s supported automation interfaces and is resilient ac
 ## Possible Future Enhancements
 
 - Playlist search and filtering
-- Shuffle and repeat indicators / toggles
 - Volume control
 - Persistent state (last playlist, last view)
 - Playing by persistent playlist ID instead of name
