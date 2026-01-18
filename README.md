@@ -149,7 +149,7 @@ This approach uses Apple’s supported automation interfaces and is resilient ac
 
 ## License
 
-MIT License
+GPLv3 (GNU General Public License v3.0) License
 
 ---
 
