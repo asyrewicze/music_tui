@@ -11,7 +11,7 @@ This project uses **Python**, **curses**, and **AppleScript (osascript)** to con
 
 ## Features
 
-- Full-screen ncurses TUI
+- Full-screen (or window) ncurses TUI
 - Now Playing display (artist, track, album)
 - Playback state indicator (playing / paused / stopped)
 - Progress bar with elapsed time and time remaining
