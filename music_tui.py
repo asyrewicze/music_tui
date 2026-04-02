@@ -58,7 +58,7 @@ tell application "Music"
         set pstate to (player state as string)
         set shuffleState to (shuffle enabled as string)
     on error
-        return "\t\t\t0\t0\tunknown\tfalse"
+        return "\t\t\t0\t0\tstopped\tfalse"
     end try
 
     if pstate is "stopped" then
@@ -96,9 +96,9 @@ end tell
     except ValueError:
         pos = 0.0
 
-    state = (state or "unknown").strip().lower()
+    state = (state or "stopped").strip().lower()
     if state not in ("playing", "paused", "stopped"):
-        state = "unknown"
+        state = "stopped"
 
     shuffle_enabled = (shuffle_s or "false").strip().lower() == "true"
 
