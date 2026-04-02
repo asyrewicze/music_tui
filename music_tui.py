@@ -173,7 +173,9 @@ tell application "Music"
         set outText to ""
         repeat with p in user playlists
             try
-                set outText to outText & (name of p as string) & linefeed
+                if class of p is not folder playlist then
+                    set outText to outText & (name of p as string) & linefeed
+                end if
             end try
         end repeat
         return outText
