@@ -246,6 +246,13 @@ def clamp(n: int, lo: int, hi: int) -> int:
     return max(lo, min(hi, n))
 
 
+def truncate(s: str, max_width: int) -> str:
+    """Clip string to max_width, replacing the last char with … if truncated."""
+    if len(s) <= max_width:
+        return s
+    return s[:max_width - 1] + "…"
+
+
 def safe_addstr(stdscr, y: int, x: int, s: str, attr: int = 0):
     h, w = stdscr.getmaxyx()
     if y < 0 or y >= h or x >= w:
@@ -380,7 +387,9 @@ def run_tui(stdscr):
 
         # Input
         ch = stdscr.getch()
-        if ch != -1:
+        if ch == curses.KEY_RESIZE:
+            curses.update_lines_cols()
+        elif ch != -1:
             if mode == Mode.MAIN:
                 if ch in (ord("q"), ord("Q")):
                     break
@@ -437,7 +446,18 @@ def run_tui(stdscr):
         stdscr.erase()
         h, w = stdscr.getmaxyx()
 
-        title = "Apple Music TUI (because GUI is for the weak)"
+        # Minimum size guard
+        MIN_COLS, MIN_ROWS = 40, 15
+        if w < MIN_COLS or h < MIN_ROWS:
+            msg = "Terminal too small — please resize"
+            safe_addstr(stdscr, h // 2, max(0, (w - len(msg)) // 2), msg, curses.A_BOLD)
+            stdscr.refresh()
+            time.sleep(0.02)
+            continue
+
+        # Title — truncate with ellipsis if terminal is narrow
+        title_full = "Apple Music TUI (because GUI is for the weak)"
+        title = title_full if len(title_full) + 2 <= w else title_full[: w - 5] + "…"
         safe_addstr(stdscr, 0, 2, title, curses.A_BOLD)
 
         if mode == Mode.MAIN:
@@ -457,8 +477,10 @@ def run_tui(stdscr):
             else:
                 np_line = "(nothing playing… or Music is being dramatic)"
 
+            # inner_w: usable columns inside the box (borders + 1 space padding each side)
+            inner_w = box_w - 4
             safe_addstr(stdscr, 2, cx, "Now Playing:", curses.A_BOLD)
-            safe_addstr(stdscr, 3, cx + 2, np_line, curses.color_pair(CP_CYAN) | curses.A_BOLD)
+            safe_addstr(stdscr, 3, cx + 2, truncate(np_line, inner_w - 2), curses.color_pair(CP_CYAN) | curses.A_BOLD)
 
             # State label + colored value
             state_color = (
@@ -470,37 +492,62 @@ def run_tui(stdscr):
             state_x = cx + len("State: ")
             safe_addstr(stdscr, 5, state_x, now_playing.state, state_color)
 
-            # Shuffle label + colored value
+            # Shuffle + Repeat: show progressively less on narrow terminals
             shuffle = "on" if now_playing.shuffle_enabled else "off"
             shuffle_color = curses.color_pair(CP_GREEN) if now_playing.shuffle_enabled else curses.color_pair(CP_DEFAULT)
             shuffle_x = state_x + len(now_playing.state) + 4
-            safe_addstr(stdscr, 5, shuffle_x, "Shuffle: ")
-            safe_addstr(stdscr, 5, shuffle_x + len("Shuffle: "), shuffle, shuffle_color)
-
-            # Repeat label + colored value
             repeat_color = curses.color_pair(CP_GREEN) if now_playing.repeat != "off" else curses.color_pair(CP_DEFAULT)
             repeat_x = shuffle_x + len("Shuffle: ") + len(shuffle) + 4
-            safe_addstr(stdscr, 5, repeat_x, "Repeat: ")
-            safe_addstr(stdscr, 5, repeat_x + len("Repeat: "), now_playing.repeat, repeat_color)
+            full_repeat_end = repeat_x + len("Repeat: ") + len(now_playing.repeat)
+
+            if full_repeat_end < w - cx:
+                # Enough room for shuffle + repeat
+                safe_addstr(stdscr, 5, shuffle_x, "Shuffle: ")
+                safe_addstr(stdscr, 5, shuffle_x + len("Shuffle: "), shuffle, shuffle_color)
+                safe_addstr(stdscr, 5, repeat_x, "Repeat: ")
+                safe_addstr(stdscr, 5, repeat_x + len("Repeat: "), now_playing.repeat, repeat_color)
+            elif shuffle_x + len("Shuffle: ") + len(shuffle) < w - cx:
+                # Only enough room for shuffle
+                safe_addstr(stdscr, 5, shuffle_x, "Shuffle: ")
+                safe_addstr(stdscr, 5, shuffle_x + len("Shuffle: "), shuffle, shuffle_color)
 
             dur = now_playing.duration
             pos = now_playing.position
             left = max(0.0, dur - pos)
 
             time_line = f"{format_time(pos)} / {format_time(dur)}   (left: {format_time(left)})"
-            safe_addstr(stdscr, 6, cx, time_line)
+            safe_addstr(stdscr, 6, cx, truncate(time_line, inner_w))
 
-            bar_y = 9
+            # Progress bar position derived from box bottom, not hardcoded
+            bar_y = box_y + box_h + 1
             bar_x = 2
             bar_width = max(10, w - 6)
-            safe_addstr(stdscr, bar_y, bar_x, "[")
-            safe_addstr(stdscr, bar_y, bar_x + bar_width + 1, "]")
-            draw_progress_bar(stdscr, bar_y, bar_x + 1, bar_width, pos=pos, dur=dur)
+            if bar_y < h - 3:
+                safe_addstr(stdscr, bar_y, bar_x, "[")
+                safe_addstr(stdscr, bar_y, bar_x + bar_width + 1, "]")
+                draw_progress_bar(stdscr, bar_y, bar_x + 1, bar_width, pos=pos, dur=dur)
 
             if t < flash_until:
                 safe_addstr(stdscr, h - 2, 2, flash_msg, curses.color_pair(CP_CYAN) | curses.A_BOLD)
             else:
-                safe_addstr(stdscr, h - 2, 2, status_msg, curses.color_pair(CP_ORANGE))
+                # Pack menu items into lines that fit the terminal width, stacking upward.
+                items = status_msg.split(" | ")
+                menu_lines = []
+                current = ""
+                for item in items:
+                    candidate = item if not current else current + " | " + item
+                    if len(candidate) <= w - 4:
+                        current = candidate
+                    else:
+                        if current:
+                            menu_lines.append(current)
+                        current = item
+                if current:
+                    menu_lines.append(current)
+                for i, line in enumerate(reversed(menu_lines)):
+                    row = h - 2 - i * 2
+                    if row > bar_y + 1:
+                        safe_addstr(stdscr, row, 2, line, curses.color_pair(CP_ORANGE))
 
         elif mode == Mode.PLAYLISTS:
             safe_addstr(stdscr, 2, 2, "Playlists (Enter to play, b/Esc to back, q to quit):", curses.A_BOLD)
