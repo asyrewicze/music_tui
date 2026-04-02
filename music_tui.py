@@ -16,8 +16,7 @@ CP_CYAN    = 2
 CP_GREEN   = 3
 CP_YELLOW  = 4
 CP_RED     = 5
-CP_DIM     = 6
-CP_ORANGE  = 7
+CP_ORANGE  = 6
 
 
 def run_osascript(script: str) -> str:
@@ -30,9 +29,10 @@ def run_osascript(script: str) -> str:
             capture_output=True,
             text=True,
             check=False,
+            timeout=5,
         )
         return (p.stdout or "").strip()
-    except Exception:
+    except (Exception, subprocess.TimeoutExpired):
         return ""
 
 
@@ -322,7 +322,6 @@ def run_tui(stdscr):
     curses.init_pair(CP_GREEN, curses.COLOR_GREEN, -1)
     curses.init_pair(CP_YELLOW, curses.COLOR_YELLOW, -1)
     curses.init_pair(CP_RED, curses.COLOR_RED, -1)
-    curses.init_pair(CP_DIM, -1, -1)
     orange = 208 if curses.COLORS >= 256 else curses.COLOR_YELLOW
     curses.init_pair(CP_ORANGE, orange, -1)
 
@@ -347,6 +346,8 @@ def run_tui(stdscr):
     status_msg = "q quit | space play/pause | s stop | n next | p prev | f shuffle | r repeat | l playlists"
     flash_msg = ""
     flash_until = 0.0
+    menu_lines: List[str] = []
+    menu_lines_width = 0  # terminal width at last pack
 
     def flash(msg: str, duration: float = 2.0):
         nonlocal flash_msg, flash_until
@@ -411,8 +412,8 @@ def run_tui(stdscr):
                     force_repoll(0.15)
                     flash("Previous track")
                 elif ch in (ord("f"), ord("F")):
-                    np_at_poll.shuffle_enabled = music_cmd_toggle_shuffle()
-                    force_repoll()
+                    np_at_poll.shuffle_enabled = not np_at_poll.shuffle_enabled
+                    music_cmd_toggle_shuffle()
                     flash(f"Shuffle: {'on' if np_at_poll.shuffle_enabled else 'off'}")
                 elif ch in (ord("r"), ord("R")):
                     next_repeat = {"off": "one", "one": "all", "all": "off"}.get(np_at_poll.repeat, "off")
@@ -530,20 +531,22 @@ def run_tui(stdscr):
             if t < flash_until:
                 safe_addstr(stdscr, h - 2, 2, flash_msg, curses.color_pair(CP_CYAN) | curses.A_BOLD)
             else:
-                # Pack menu items into lines that fit the terminal width, stacking upward.
-                items = status_msg.split(" | ")
-                menu_lines = []
-                current = ""
-                for item in items:
-                    candidate = item if not current else current + " | " + item
-                    if len(candidate) <= w - 4:
-                        current = candidate
-                    else:
-                        if current:
-                            menu_lines.append(current)
-                        current = item
-                if current:
-                    menu_lines.append(current)
+                # Repack menu lines only when terminal width changes.
+                if w != menu_lines_width:
+                    items = status_msg.split(" | ")
+                    menu_lines = []
+                    current = ""
+                    for item in items:
+                        candidate = item if not current else current + " | " + item
+                        if len(candidate) <= w - 4:
+                            current = candidate
+                        else:
+                            if current:
+                                menu_lines.append(current)
+                            current = item
+                    if current:
+                        menu_lines.append(current)
+                    menu_lines_width = w
                 for i, line in enumerate(reversed(menu_lines)):
                     row = h - 2 - i * 2
                     if row > bar_y + 1:
