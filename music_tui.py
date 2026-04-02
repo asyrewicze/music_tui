@@ -338,6 +338,13 @@ def run_tui(stdscr):
     now_playing = NowPlaying()
 
     status_msg = "q quit | space play/pause | s stop | n next | p prev | f shuffle | r repeat | l playlists"
+    flash_msg = ""
+    flash_until = 0.0
+
+    def flash(msg: str, duration: float = 2.0):
+        nonlocal flash_msg, flash_until
+        flash_msg = msg
+        flash_until = time.time() + duration
 
     def force_repoll(delay_sec: float = 0.0):
         """Immediately refresh the authoritative snapshot from Music.
@@ -380,23 +387,29 @@ def run_tui(stdscr):
                 elif ch == ord(" "):
                     music_cmd_toggle_play_pause(now_playing)
                     force_repoll()
+                    flash("Paused" if now_playing.state == "playing" else "Playing")
                 elif ch in (ord("s"), ord("S")):
                     music_cmd_stop()
                     force_repoll()
+                    flash("Stopped")
                 elif ch in (ord("n"), ord("N")):
                     music_cmd_next()
                     # Give Music a brief moment to advance tracks before sampling.
                     force_repoll(0.15)
+                    flash("Next track")
                 elif ch in (ord("p"), ord("P")):
                     music_cmd_prev()
                     force_repoll(0.15)
+                    flash("Previous track")
                 elif ch in (ord("f"), ord("F")):
                     np_at_poll.shuffle_enabled = music_cmd_toggle_shuffle()
                     force_repoll()
+                    flash(f"Shuffle: {'on' if np_at_poll.shuffle_enabled else 'off'}")
                 elif ch in (ord("r"), ord("R")):
                     next_repeat = {"off": "one", "one": "all", "all": "off"}.get(np_at_poll.repeat, "off")
                     np_at_poll.repeat = next_repeat
                     music_cmd_set_repeat(next_repeat)
+                    flash(f"Repeat: {next_repeat}")
                 elif ch in (ord("l"), ord("L")):
                     playlists = get_playlists()
                     mode = Mode.PLAYLISTS
@@ -416,6 +429,7 @@ def run_tui(stdscr):
                     if playlists:
                         music_cmd_play_playlist(playlists[pl_selected])
                         mode = Mode.MAIN
+                        flash(f"Playing: {playlists[pl_selected].strip()}")
                         # Playlist selection is a user action; refresh immediately.
                         force_repoll(0.15)
 
@@ -483,7 +497,10 @@ def run_tui(stdscr):
             safe_addstr(stdscr, bar_y, bar_x + bar_width + 1, "]")
             draw_progress_bar(stdscr, bar_y, bar_x + 1, bar_width, pos=pos, dur=dur)
 
-            safe_addstr(stdscr, h - 2, 2, status_msg, curses.color_pair(CP_ORANGE))
+            if t < flash_until:
+                safe_addstr(stdscr, h - 2, 2, flash_msg, curses.color_pair(CP_CYAN) | curses.A_BOLD)
+            else:
+                safe_addstr(stdscr, h - 2, 2, status_msg, curses.color_pair(CP_ORANGE))
 
         elif mode == Mode.PLAYLISTS:
             safe_addstr(stdscr, 2, 2, "Playlists (Enter to play, b/Esc to back, q to quit):", curses.A_BOLD)
