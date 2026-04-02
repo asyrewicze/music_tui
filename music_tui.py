@@ -248,10 +248,20 @@ def draw_progress_bar(stdscr, y: int, x: int, width: int, pos: float, dur: float
         filled = 0
     else:
         filled = clamp(int((pos / dur) * width), 0, width)
-    if filled > 0:
-        safe_addstr(stdscr, y, x, "#" * filled, curses.color_pair(CP_GREEN))
+
     empty = width - filled
-    if empty > 0:
+
+    if filled == 0:
+        # Nothing played yet — all empty
+        safe_addstr(stdscr, y, x, "-" * width, curses.color_pair(CP_DEFAULT) | curses.A_DIM)
+    elif filled == width:
+        # Fully played — all hashes, no room for marker
+        safe_addstr(stdscr, y, x, "#" * width, curses.color_pair(CP_GREEN))
+    else:
+        # Normal case: hashes + playhead marker + empty
+        if filled > 1:
+            safe_addstr(stdscr, y, x, "#" * (filled - 1), curses.color_pair(CP_GREEN))
+        safe_addstr(stdscr, y, x + filled - 1, ">", curses.color_pair(CP_GREEN) | curses.A_BOLD)
         safe_addstr(stdscr, y, x + filled, "-" * empty, curses.color_pair(CP_DEFAULT) | curses.A_DIM)
 
 
