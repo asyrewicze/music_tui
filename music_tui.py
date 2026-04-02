@@ -45,24 +45,27 @@ class NowPlaying:
     position: float = 0.0  # seconds
     state: str = "stopped"  # playing|paused|stopped|unknown
     shuffle_enabled: bool = False
+    repeat: str = "off"  # off|one|all
 
 
 def get_now_playing() -> NowPlaying:
     # One call returns a tab-delimited row:
-    # track \t artist \t album \t duration \t position \t state \t shuffleEnabled
+    # track \t artist \t album \t duration \t position \t state \t shuffleEnabled \t repeat
     script = r'''
 tell application "Music"
     set shuffleState to "false"
     set pstate to "stopped"
+    set repeatState to "off"
     try
         set pstate to (player state as string)
         set shuffleState to (shuffle enabled as string)
+        set repeatState to (song repeat as string)
     on error
-        return "\t\t\t0\t0\tstopped\tfalse"
+        return "\t\t\t0\t0\tstopped\tfalse\toff"
     end try
 
     if pstate is "stopped" then
-        return "\t\t\t0\t0\t" & pstate & "\t" & shuffleState
+        return "\t\t\t0\t0\t" & pstate & "\t" & shuffleState & "\t" & repeatState
     end if
 
     try
@@ -72,19 +75,19 @@ tell application "Music"
         set albumName to (album of t) as string
         set dur to (duration of t) as string
         set pos to (player position) as string
-        return trackName & tab & artistName & tab & albumName & tab & dur & tab & pos & tab & pstate & tab & shuffleState
+        return trackName & tab & artistName & tab & albumName & tab & dur & tab & pos & tab & pstate & tab & shuffleState & tab & repeatState
     on error
-        return "\t\t\t0\t0\t" & pstate & "\t" & shuffleState
+        return "\t\t\t0\t0\t" & pstate & "\t" & shuffleState & "\t" & repeatState
     end try
 end tell
 '''.strip()
 
     out = run_osascript(script)
     parts = out.split("\t")
-    while len(parts) < 7:
+    while len(parts) < 8:
         parts.append("")
 
-    track, artist, album, dur_s, pos_s, state, shuffle_s = parts[:7]
+    track, artist, album, dur_s, pos_s, state, shuffle_s, repeat_s = parts[:8]
 
     try:
         dur = float(dur_s) if dur_s else 0.0
@@ -102,6 +105,10 @@ end tell
 
     shuffle_enabled = (shuffle_s or "false").strip().lower() == "true"
 
+    repeat_raw = (repeat_s or "off").strip().lower()
+    repeat_map = {"off": "off", "one": "one", "all": "all"}
+    repeat = repeat_map.get(repeat_raw, "off")
+
     return NowPlaying(
         track=track.strip(),
         artist=artist.strip(),
@@ -110,6 +117,7 @@ end tell
         position=max(pos, 0.0),
         state=state,
         shuffle_enabled=shuffle_enabled,
+        repeat=repeat,
     )
 
 
@@ -150,6 +158,17 @@ def music_cmd_toggle_play_pause(np: NowPlaying):
         music_cmd_pause()
     else:
         music_cmd_play()
+
+
+# --- Repeat -------------------------------------------------------------------
+
+def music_cmd_set_repeat(mode: str):
+    """
+    Set repeat mode directly: off | one | all.
+    Driving the cycle locally avoids reading stale state from Apple Music.
+    """
+    as_value = {"off": "off", "one": "one", "all": "all"}.get(mode, "off")
+    run_osascript(f'tell application "Music" to set song repeat to {as_value}')
 
 
 # --- Shuffle ------------------------------------------------------------------
@@ -318,7 +337,7 @@ def run_tui(stdscr):
     # What we display (may be locally advanced between polls).
     now_playing = NowPlaying()
 
-    status_msg = "q quit | space play/pause | s stop | n next | p prev | f shuffle | l playlists"
+    status_msg = "q quit | space play/pause | s stop | n next | p prev | f shuffle | r repeat | l playlists"
 
     def force_repoll(delay_sec: float = 0.0):
         """Immediately refresh the authoritative snapshot from Music.
@@ -374,6 +393,10 @@ def run_tui(stdscr):
                 elif ch in (ord("f"), ord("F")):
                     np_at_poll.shuffle_enabled = music_cmd_toggle_shuffle()
                     force_repoll()
+                elif ch in (ord("r"), ord("R")):
+                    next_repeat = {"off": "one", "one": "all", "all": "off"}.get(np_at_poll.repeat, "off")
+                    np_at_poll.repeat = next_repeat
+                    music_cmd_set_repeat(next_repeat)
                 elif ch in (ord("l"), ord("L")):
                     playlists = get_playlists()
                     mode = Mode.PLAYLISTS
@@ -439,6 +462,12 @@ def run_tui(stdscr):
             shuffle_x = state_x + len(now_playing.state) + 4
             safe_addstr(stdscr, 5, shuffle_x, "Shuffle: ")
             safe_addstr(stdscr, 5, shuffle_x + len("Shuffle: "), shuffle, shuffle_color)
+
+            # Repeat label + colored value
+            repeat_color = curses.color_pair(CP_GREEN) if now_playing.repeat != "off" else curses.color_pair(CP_DEFAULT)
+            repeat_x = shuffle_x + len("Shuffle: ") + len(shuffle) + 4
+            safe_addstr(stdscr, 5, repeat_x, "Repeat: ")
+            safe_addstr(stdscr, 5, repeat_x + len("Repeat: "), now_playing.repeat, repeat_color)
 
             dur = now_playing.duration
             pos = now_playing.position
