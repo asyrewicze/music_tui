@@ -241,6 +241,25 @@ def safe_addstr(stdscr, y: int, x: int, s: str, attr: int = 0):
         pass
 
 
+def draw_box(stdscr, y: int, x: int, height: int, width: int, attr: int = 0):
+    if not (attr & curses.A_COLOR):
+        attr |= curses.color_pair(CP_DEFAULT)
+    h, w = stdscr.getmaxyx()
+    try:
+        stdscr.addch(y, x, curses.ACS_ULCORNER, attr)
+        stdscr.addch(y, x + width - 1, curses.ACS_URCORNER, attr)
+        stdscr.addch(y + height - 1, x, curses.ACS_LLCORNER, attr)
+        # Bottom-right corner can raise in some terminals; guard it
+        if y + height - 1 < h - 1 or x + width - 1 < w - 1:
+            stdscr.addch(y + height - 1, x + width - 1, curses.ACS_LRCORNER, attr)
+        stdscr.hline(y, x + 1, curses.ACS_HLINE, width - 2, attr)
+        stdscr.hline(y + height - 1, x + 1, curses.ACS_HLINE, width - 2, attr)
+        stdscr.vline(y + 1, x, curses.ACS_VLINE, height - 2, attr)
+        stdscr.vline(y + 1, x + width - 1, curses.ACS_VLINE, height - 2, attr)
+    except curses.error:
+        pass
+
+
 def draw_progress_bar(stdscr, y: int, x: int, width: int, pos: float, dur: float):
     if width <= 0:
         return
@@ -385,6 +404,15 @@ def run_tui(stdscr):
         safe_addstr(stdscr, 0, 2, title, curses.A_BOLD)
 
         if mode == Mode.MAIN:
+            # Box around now playing section
+            box_x = 1
+            box_y = 1
+            box_w = w - 2
+            box_h = 7
+            draw_box(stdscr, box_y, box_x, box_h, box_w)
+
+            cx = box_x + 2  # content x: inside border + 1 space padding
+
             if now_playing.track or now_playing.artist or now_playing.album:
                 np_line = f"{now_playing.artist} — {now_playing.track}"
                 if now_playing.album:
@@ -392,8 +420,8 @@ def run_tui(stdscr):
             else:
                 np_line = "(nothing playing… or Music is being dramatic)"
 
-            safe_addstr(stdscr, 2, 2, "Now Playing:", curses.A_BOLD)
-            safe_addstr(stdscr, 3, 4, np_line, curses.color_pair(CP_CYAN) | curses.A_BOLD)
+            safe_addstr(stdscr, 2, cx, "Now Playing:", curses.A_BOLD)
+            safe_addstr(stdscr, 3, cx + 2, np_line, curses.color_pair(CP_CYAN) | curses.A_BOLD)
 
             # State label + colored value
             state_color = (
@@ -401,8 +429,8 @@ def run_tui(stdscr):
                 curses.color_pair(CP_YELLOW) if now_playing.state == "paused" else
                 curses.color_pair(CP_RED)
             )
-            safe_addstr(stdscr, 5, 2, "State: ")
-            state_x = 2 + len("State: ")
+            safe_addstr(stdscr, 5, cx, "State: ")
+            state_x = cx + len("State: ")
             safe_addstr(stdscr, 5, state_x, now_playing.state, state_color)
 
             # Shuffle label + colored value
@@ -417,9 +445,9 @@ def run_tui(stdscr):
             left = max(0.0, dur - pos)
 
             time_line = f"{format_time(pos)} / {format_time(dur)}   (left: {format_time(left)})"
-            safe_addstr(stdscr, 6, 2, time_line)
+            safe_addstr(stdscr, 6, cx, time_line)
 
-            bar_y = 8
+            bar_y = 9
             bar_x = 2
             bar_width = max(10, w - 6)
             safe_addstr(stdscr, bar_y, bar_x, "[")
