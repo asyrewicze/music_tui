@@ -186,7 +186,7 @@ end tell
 '''.strip()
 
     out = run_osascript(script)
-    names = [line.strip() for line in out.splitlines() if line.strip()]
+    names = [line for line in out.splitlines() if line.strip()]
 
     # De-dupe while preserving order
     seen = set()
