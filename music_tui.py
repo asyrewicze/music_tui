@@ -10,6 +10,15 @@ from typing import List
 # The UI can still tick smoothly in-between without additional polling.
 POLL_INTERVAL_SEC = 10.0
 
+# Color pair IDs
+CP_DEFAULT = 1
+CP_CYAN    = 2
+CP_GREEN   = 3
+CP_YELLOW  = 4
+CP_RED     = 5
+CP_DIM     = 6
+CP_ORANGE  = 7
+
 
 def run_osascript(script: str) -> str:
     """
@@ -223,9 +232,11 @@ def safe_addstr(stdscr, y: int, x: int, s: str, attr: int = 0):
     if y < 0 or y >= h or x >= w:
         return
     s = s[: max(0, w - x - 1)]
-    base = curses.color_pair(1)
+    # If no color pair is already specified in attr, apply the default pair.
+    if not (attr & curses.A_COLOR):
+        attr |= curses.color_pair(CP_DEFAULT)
     try:
-        stdscr.addstr(y, x, s, attr | base)
+        stdscr.addstr(y, x, s, attr)
     except curses.error:
         pass
 
@@ -237,8 +248,11 @@ def draw_progress_bar(stdscr, y: int, x: int, width: int, pos: float, dur: float
         filled = 0
     else:
         filled = clamp(int((pos / dur) * width), 0, width)
-    bar = ("#" * filled) + ("-" * (width - filled))
-    safe_addstr(stdscr, y, x, bar)
+    if filled > 0:
+        safe_addstr(stdscr, y, x, "#" * filled, curses.color_pair(CP_GREEN))
+    empty = width - filled
+    if empty > 0:
+        safe_addstr(stdscr, y, x + filled, "-" * empty, curses.color_pair(CP_DEFAULT) | curses.A_DIM)
 
 
 # --- Main TUI -----------------------------------------------------------------
@@ -248,11 +262,17 @@ def run_tui(stdscr):
     curses.start_color()
     curses.use_default_colors()
 
-    curses.init_pair(1, -1, -1)
-    BASE = curses.color_pair(1)
+    curses.init_pair(CP_DEFAULT, -1, -1)
+    curses.init_pair(CP_CYAN, curses.COLOR_CYAN, -1)
+    curses.init_pair(CP_GREEN, curses.COLOR_GREEN, -1)
+    curses.init_pair(CP_YELLOW, curses.COLOR_YELLOW, -1)
+    curses.init_pair(CP_RED, curses.COLOR_RED, -1)
+    curses.init_pair(CP_DIM, -1, -1)
+    orange = 208 if curses.COLORS >= 256 else curses.COLOR_YELLOW
+    curses.init_pair(CP_ORANGE, orange, -1)
 
-    stdscr.bkgd(' ', BASE)
-    stdscr.bkgdset(' ', BASE)
+    stdscr.bkgd(' ', curses.color_pair(CP_DEFAULT))
+    stdscr.bkgdset(' ', curses.color_pair(CP_DEFAULT))
     stdscr.erase()
     stdscr.nodelay(True)
     stdscr.keypad(True)
@@ -363,10 +383,24 @@ def run_tui(stdscr):
                 np_line = "(nothing playing… or Music is being dramatic)"
 
             safe_addstr(stdscr, 2, 2, "Now Playing:", curses.A_BOLD)
-            safe_addstr(stdscr, 3, 4, np_line)
+            safe_addstr(stdscr, 3, 4, np_line, curses.color_pair(CP_CYAN) | curses.A_BOLD)
 
+            # State label + colored value
+            state_color = (
+                curses.color_pair(CP_GREEN) if now_playing.state == "playing" else
+                curses.color_pair(CP_YELLOW) if now_playing.state == "paused" else
+                curses.color_pair(CP_RED)
+            )
+            safe_addstr(stdscr, 5, 2, "State: ")
+            state_x = 2 + len("State: ")
+            safe_addstr(stdscr, 5, state_x, now_playing.state, state_color)
+
+            # Shuffle label + colored value
             shuffle = "on" if now_playing.shuffle_enabled else "off"
-            safe_addstr(stdscr, 5, 2, f"State: {now_playing.state}    Shuffle: {shuffle}")
+            shuffle_color = curses.color_pair(CP_GREEN) if now_playing.shuffle_enabled else curses.color_pair(CP_DEFAULT)
+            shuffle_x = state_x + len(now_playing.state) + 4
+            safe_addstr(stdscr, 5, shuffle_x, "Shuffle: ")
+            safe_addstr(stdscr, 5, shuffle_x + len("Shuffle: "), shuffle, shuffle_color)
 
             dur = now_playing.duration
             pos = now_playing.position
@@ -382,7 +416,7 @@ def run_tui(stdscr):
             safe_addstr(stdscr, bar_y, bar_x + bar_width + 1, "]")
             draw_progress_bar(stdscr, bar_y, bar_x + 1, bar_width, pos=pos, dur=dur)
 
-            safe_addstr(stdscr, h - 2, 2, status_msg)
+            safe_addstr(stdscr, h - 2, 2, status_msg, curses.color_pair(CP_ORANGE))
 
         elif mode == Mode.PLAYLISTS:
             safe_addstr(stdscr, 2, 2, "Playlists (Enter to play, b/Esc to back, q to quit):", curses.A_BOLD)
@@ -404,11 +438,14 @@ def run_tui(stdscr):
                     if idx >= len(playlists):
                         break
                     name = playlists[idx]
-                    attr = curses.A_REVERSE if idx == pl_selected else 0
+                    if idx == pl_selected:
+                        attr = curses.color_pair(CP_CYAN) | curses.A_BOLD
+                    else:
+                        attr = curses.color_pair(CP_DEFAULT)
                     safe_addstr(stdscr, list_top + i, 4, name, attr)
 
                 footer = f"{pl_selected + 1}/{len(playlists)}  (↑↓ or j/k)"
-                safe_addstr(stdscr, h - 1, 2, footer)
+                safe_addstr(stdscr, h - 1, 2, footer, curses.color_pair(CP_ORANGE))
 
         stdscr.refresh()
         time.sleep(0.02)
