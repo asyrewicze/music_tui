@@ -133,7 +133,7 @@ def music_cmd_play_playlist(name: str):
     (We can upgrade to persistent IDs later if needed.)
     """
     safe = name.replace('"', '\\"')
-    run_osascript(f'tell application "Music" to play playlist "{safe}"')
+    run_osascript(f'tell application "Music" to play user playlist "{safe}"')
 
 
 def music_cmd_toggle_play_pause(np: NowPlaying):
