@@ -1,7 +1,7 @@
 # music_tui
 
-`music_tui` is a terminal-based (ncurses) controller for **Apple Music on macOS**.  
-It provides a keyboard-driven TUI for playback control, now-playing status, progress tracking, and playlist selection — all without leaving the terminal.
+`music_tui` is a terminal-based (ncurses) controller for **Apple Music on macOS**.
+It provides a keyboard-driven TUI for playback control, now-playing status, progress tracking, playlist selection, and shuffle/repeat management -- all without leaving the terminal.
 
 This project uses **Python**, **curses**, and **AppleScript (osascript)** to control the native Music app. No DRM hacks, no reverse engineering, and no browser tabs were harmed.
 
@@ -11,16 +11,22 @@ This project uses **Python**, **curses**, and **AppleScript (osascript)** to con
 
 ## Features
 
-- Full-screen (or window) ncurses TUI
-- Now Playing display (artist, track, album)
-- Playback state indicator (playing / paused / stopped)
-- Progress bar with elapsed time and time remaining
+- Full-screen (or window) ncurses TUI with color-coded display
+- Now Playing display (artist, track, album) with box border layout
+- Playback state indicator with color coding (playing / paused / stopped)
+- Progress bar with playhead marker, elapsed time, and time remaining
+- Shuffle state display and toggle
+- Repeat state display and cycling (off / one / all)
+- Transient flash notifications for user actions
+- Adaptive layout that adjusts to terminal width and height
 - Keyboard controls for:
   - Play / pause toggle
   - Stop
   - Next / previous track
+  - Shuffle toggle
+  - Repeat cycle
 - Playlist browser
-  - Enumerates user playlists
+  - Enumerates user playlists (folder playlists excluded)
   - Keyboard navigation
   - Play selected playlist
 - Pure terminal workflow (works well with tmux / Kitty panes)
@@ -83,6 +89,8 @@ The Music app does not need to be running beforehand; macOS will launch it autom
 | n | Next track |
 | p | Previous track |
 | s | Stop |
+| f | Toggle shuffle |
+| r | Cycle repeat mode (off / one / all) |
 | l | Open playlist browser |
 | q | Quit |
 
@@ -107,7 +115,7 @@ On first run, you may be prompted to allow your terminal to control **Music**.
 If nothing responds:
 
 1. Open **System Settings**
-2. Go to **Privacy & Security → Automation**
+2. Go to **Privacy & Security -> Automation**
 3. Allow your terminal application (Terminal, iTerm2, Kitty, etc.) to control **Music**
 
 Without this permission, AppleScript commands will silently fail.
@@ -118,14 +126,25 @@ Without this permission, AppleScript commands will silently fail.
 
 - The TUI is rendered using Python `curses`
 - Playback and metadata are queried via `osascript`
-- Apple Music’s scripting dictionary provides:
+- Apple Music's scripting dictionary provides:
   - Player state
   - Current track metadata
   - Playback position
+  - Shuffle and repeat state
   - Playlist enumeration
 - Playlists are enumerated safely using manual AppleScript iteration to avoid list coercion issues
+- Folder playlists are excluded from the browser as they cannot be played directly
 
-This approach uses Apple’s supported automation interfaces and is resilient across macOS updates.
+### Timing Model
+
+The app uses two separate timing mechanisms to minimize AppleScript calls:
+
+- **Slow poll (every 10 seconds)** -- fetches authoritative state from Apple Music via a single consolidated osascript call
+- **Local interpolation (every 1 second)** -- advances the playback position counter in the UI without any osascript call
+
+This keeps CPU usage low while maintaining a responsive, smoothly ticking UI. Any user action (play, pause, next, etc.) triggers an immediate state refresh outside the normal poll cycle.
+
+This approach uses Apple's supported automation interfaces and is resilient across macOS updates.
 
 ---
 
@@ -134,6 +153,7 @@ This approach uses Apple’s supported automation interfaces and is resilient ac
 - macOS only (depends on AppleScript)
 - No album art (ncurses is character-cell based)
 - Playlist selection is name-based (duplicate playlist names may resolve unpredictably)
+- No audio visualizer (AppleScript does not provide access to the audio stream)
 
 ---
 
@@ -155,5 +175,5 @@ GPLv3 (GNU General Public License v3.0) License
 
 ## Disclaimer
 
-This project is not affiliated with or endorsed by Apple.  
+This project is not affiliated with or endorsed by Apple.
 Apple Music and macOS are trademarks of Apple Inc.
