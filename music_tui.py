@@ -448,7 +448,7 @@ def run_tui(stdscr):
         h, w = stdscr.getmaxyx()
 
         # Minimum size guard
-        MIN_COLS, MIN_ROWS = 40, 15
+        MIN_COLS, MIN_ROWS = 40, 16
         if w < MIN_COLS or h < MIN_ROWS:
             msg = "Terminal too small — please resize"
             safe_addstr(stdscr, h // 2, max(0, (w - len(msg)) // 2), msg, curses.A_BOLD)
@@ -459,12 +459,12 @@ def run_tui(stdscr):
         # Title — truncate with ellipsis if terminal is narrow
         title_full = "Apple Music TUI (because GUI is for the weak)"
         title = title_full if len(title_full) + 2 <= w else title_full[: w - 5] + "…"
-        safe_addstr(stdscr, 0, 2, title, curses.A_BOLD)
+        safe_addstr(stdscr, 1, 2, title, curses.A_BOLD)
 
         if mode == Mode.MAIN:
             # Box around now playing section
             box_x = 1
-            box_y = 1
+            box_y = 2
             box_w = w - 2
             box_h = 7
             draw_box(stdscr, box_y, box_x, box_h, box_w)
