@@ -293,10 +293,12 @@ def run_tui(stdscr):
             np_poll_time = t
             last_poll = t
 
-        # Locally advance position between polls so the timer ticks smoothly.
+        # Locally advance position each tick so the timer updates every second
+        # without an AppleScript call. np_at_poll is the authoritative snapshot
+        # from Music.app; we copy it here to avoid mutating the cached state.
+        # The slow poll (~10s) will re-sync position with the real player state.
         now_playing = np_at_poll
         if now_playing.state == "playing":
-            # Copy so we don't mutate the polled snapshot.
             now_playing = NowPlaying(**now_playing.__dict__)
             elapsed = max(0.0, t - np_poll_time)
             now_playing.position = min(now_playing.duration, now_playing.position + elapsed)
