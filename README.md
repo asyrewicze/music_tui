@@ -241,6 +241,7 @@ The app uses two separate timing mechanisms to minimize AppleScript calls:
 
 - **Slow poll (every 10 seconds)** -- fetches authoritative state from Apple Music via a single consolidated osascript call
 - **Local interpolation (every 1 second)** -- advances the playback position counter in the UI without any osascript call
+- **On-demand calls** -- playlist enumeration (`l`) and library search (`s`) each issue their own osascript call when invoked, outside the poll cycle. They are user-initiated and infrequent, so they do not affect the polling budget
 
 This keeps CPU usage low while maintaining a responsive, smoothly ticking UI. Any user action (play, pause, next, etc.) triggers an immediate state refresh outside the normal poll cycle.
 
@@ -263,14 +264,18 @@ This approach uses Apple's supported automation interfaces and is resilient acro
 
 ---
 
-## Possible Future Enhancements
+## Contributing
 
-- Filtering within the playlist browser
-- Album and composer search areas
-- Volume control
-- Persistent state (last playlist, last view)
-- Playing by persistent playlist ID instead of name
-- Kitty/iTerm-specific enhancements (optional, non-portable)
+Contributions are welcome. Read [CONTRIBUTING.md](./CONTRIBUTING.md) first -- it covers
+what is in and out of scope, the timing model that must not be disturbed and why, the
+drawing and AppleScript conventions, and how to test a curses app that drives a real
+application without touching anyone's playback.
+
+Feature ideas are tracked as [issues](https://github.com/asyrewicze/music_tui/issues)
+rather than listed here -- open one to propose something, and check the existing issues
+before starting work so two people do not build the same thing.
+
+By submitting a contribution you agree to license it under GPLv3.
 
 ---
 
