@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 import curses
+import locale
+import os
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from typing import List
@@ -17,6 +20,50 @@ CP_GREEN   = 3
 CP_YELLOW  = 4
 CP_RED     = 5
 CP_ORANGE  = 6
+
+# Layout ladder. At or above the first pair we draw the full layout; below it we
+# fall back to the compact layout; below the second pair there is nothing worth
+# drawing and we ask for a resize.
+MIN_COLS, MIN_ROWS = 40, 16
+MIN_COMPACT_COLS, MIN_COMPACT_ROWS = 20, 8
+
+
+def _unicode_supported() -> bool:
+    """Not every terminal/font renders the dot and symbol glyphs; MUSIC_TUI_ASCII=1 opts out."""
+    if os.environ.get("MUSIC_TUI_ASCII"):
+        return False
+    enc = getattr(sys.stdout, "encoding", None) or locale.getpreferredencoding(False) or ""
+    return "utf" in enc.lower()
+
+
+UNICODE = _unicode_supported()
+
+ELLIPSIS      = "…" if UNICODE else "~"
+DASH          = "—" if UNICODE else "-"
+ARROWS        = "↑↓" if UNICODE else "up/dn"
+SPACE_KEY     = "␣" if UNICODE else "spc"
+DOT_FILL      = "●" if UNICODE else "#"
+DOT_EMPTY     = "·" if UNICODE else "."
+GLYPH_SHUFFLE = "⇄" if UNICODE else "S"
+GLYPH_REPEAT  = "↻" if UNICODE else "R"
+GLYPH_STATE = (
+    {"playing": "▶", "paused": "‖", "stopped": "■"} if UNICODE
+    else {"playing": ">", "paused": "||", "stopped": "[]"}
+)
+
+# Every binding, four per row, for the two-row compact hint block.
+COMPACT_KEYS = (
+    ((SPACE_KEY, "play/pause", "play"), ("n", "next", "next"),
+     ("p", "prev", "prev"), ("s", "stop", "stop")),
+    (("f", "shuffle", "shuf"), ("r", "repeat", "rep"),
+     ("l", "lists", "lists"), ("q", "quit", "quit")),
+)
+
+# Compact progress indicator: a 3x3 grid of dots that fills in reading order
+# (left to right, top to bottom), one dot per ninth of the track.
+DOTS_ROWS, DOTS_COLS = 3, 3
+DOTS_GAP = 2  # columns between dot centres
+DOTS_W = (DOTS_COLS - 1) * DOTS_GAP + 1  # rendered width of one dot row
 
 
 def run_osascript(script: str) -> str:
@@ -247,10 +294,21 @@ def clamp(n: int, lo: int, hi: int) -> int:
 
 
 def truncate(s: str, max_width: int) -> str:
-    """Clip string to max_width, replacing the last char with … if truncated."""
+    """Clip string to max_width, replacing the last char with ELLIPSIS if truncated."""
+    if max_width <= 0:
+        return ""
     if len(s) <= max_width:
         return s
-    return s[:max_width - 1] + "…"
+    return s[:max_width - 1] + ELLIPSIS
+
+
+def clamp_scroll(selected: int, scroll: int, total: int, height: int) -> int:
+    """Slide a scroll window just far enough to keep `selected` visible."""
+    if selected < scroll:
+        scroll = selected
+    if selected >= scroll + height:
+        scroll = selected - height + 1
+    return clamp(scroll, 0, max(0, total - height))
 
 
 def safe_addstr(stdscr, y: int, x: int, s: str, attr: int = 0):
@@ -308,6 +366,141 @@ def draw_progress_bar(stdscr, y: int, x: int, width: int, pos: float, dur: float
             safe_addstr(stdscr, y, x, "#" * (filled - 1), curses.color_pair(CP_GREEN))
         safe_addstr(stdscr, y, x + filled - 1, ">", curses.color_pair(CP_GREEN) | curses.A_BOLD)
         safe_addstr(stdscr, y, x + filled, "-" * empty, curses.color_pair(CP_DEFAULT) | curses.A_DIM)
+
+
+# --- Compact layout -----------------------------------------------------------
+
+def draw_progress_dots(stdscr, y: int, x: int, pos: float, dur: float):
+    """Compact counterpart to draw_progress_bar: a DOTS_ROWS x DOTS_COLS dot grid."""
+    segments = DOTS_ROWS * DOTS_COLS
+    if dur > 0:
+        done = clamp(int((pos / dur) * segments), 0, segments)
+        # The dot currently being played, so the grid is never blank mid-track.
+        playhead = min(done, segments - 1)
+    else:
+        done, playhead = 0, -1
+
+    for i in range(segments):
+        row, col = divmod(i, DOTS_COLS)  # reading order: across, then down
+        if i < done or i == playhead:
+            glyph = DOT_FILL
+            attr = curses.color_pair(CP_GREEN)
+            if i == playhead:
+                attr |= curses.A_BOLD
+        else:
+            glyph = DOT_EMPTY
+            attr = curses.color_pair(CP_DEFAULT) | curses.A_DIM
+        safe_addstr(stdscr, y + row, x + col * DOTS_GAP, glyph, attr)
+
+
+def compact_hint_rows(w: int) -> List[str]:
+    """Two rows covering every binding, in the most legible form that fits.
+
+    Degrades label length, then spacing, then drops to bare keys. Both rows use
+    the same form so the columns stay aligned.
+    """
+    budget = w - 2
+    for label_idx, gap in ((1, 2), (2, 2), (2, 1), (None, 2), (None, 1)):
+        rows = [
+            (" " * gap).join(
+                item[0] if label_idx is None else f"{item[0]} {item[label_idx]}"
+                for item in row
+            )
+            for row in COMPACT_KEYS
+        ]
+        if max(len(r) for r in rows) <= budget:
+            return rows
+    return rows  # narrowest form; safe_addstr clips anything still over
+
+
+def draw_compact_main(stdscr, h: int, w: int, np: NowPlaying, footer: str = ""):
+    """Minimised now-playing view.
+
+    Eight rows: title, blank, three dot-grid rows carrying the times and state
+    symbols alongside, blank, then two bottom-anchored hint rows listing every
+    binding. A taller-but-narrow terminal just grows the gap in the middle.
+    """
+    if np.track or np.artist or np.album:
+        line = f"{np.artist} {DASH} {np.track}" if np.artist else (np.track or np.album)
+    else:
+        line = "(nothing playing)"
+    safe_addstr(stdscr, 0, 1, truncate(line, w - 2), curses.color_pair(CP_CYAN) | curses.A_BOLD)
+
+    grid_y, grid_x = 2, 1  # row 1 stays blank
+    draw_progress_dots(stdscr, grid_y, grid_x, np.position, np.duration)
+
+    text_x = grid_x + DOTS_W + 2
+    text_w = w - text_x - 1
+    if text_w > 0:
+        times = f"{format_time(np.position)} / {format_time(np.duration)}"
+        safe_addstr(stdscr, grid_y, text_x, truncate(times, text_w))
+
+        state_attr = (
+            curses.color_pair(CP_GREEN) if np.state == "playing" else
+            curses.color_pair(CP_YELLOW) if np.state == "paused" else
+            curses.color_pair(CP_RED)
+        )
+        glyph = GLYPH_STATE.get(np.state, GLYPH_STATE["stopped"])
+        safe_addstr(stdscr, grid_y + 1, text_x, truncate(glyph, text_w),
+                    state_attr | curses.A_BOLD)
+
+        flags = []
+        if np.shuffle_enabled:
+            flags.append(GLYPH_SHUFFLE)
+        if np.repeat == "all":
+            flags.append(GLYPH_REPEAT)
+        elif np.repeat == "one":
+            flags.append(GLYPH_REPEAT + "1")
+        if flags:
+            flags_x = text_x + len(glyph) + 1
+            safe_addstr(stdscr, grid_y + 1, flags_x, truncate(" ".join(flags), w - flags_x - 1),
+                        curses.color_pair(CP_GREEN))
+
+    hint_rows = compact_hint_rows(w)
+    if footer:
+        # Flash takes the first hint row, matching the full layout.
+        safe_addstr(stdscr, h - len(hint_rows), 1, truncate(footer, w - 2),
+                    curses.color_pair(CP_CYAN) | curses.A_BOLD)
+    else:
+        for i, row in enumerate(hint_rows):
+            safe_addstr(stdscr, h - len(hint_rows) + i, 1, row, curses.color_pair(CP_ORANGE))
+
+
+def draw_compact_playlists(stdscr, h: int, w: int, playlists: List[str],
+                           selected: int, scroll: int) -> int:
+    """Stripped playlist list for the compact layout. Returns the adjusted scroll."""
+    safe_addstr(stdscr, 0, 1, truncate("Playlists:", w - 2), curses.A_BOLD)
+
+    if not playlists:
+        safe_addstr(stdscr, 1, 1, truncate("(no playlists found)", w - 2))
+        return scroll
+
+    # Derived from the header/footer actually drawn above and below.
+    list_top = 1
+    list_height = max(1, h - list_top - 1)
+    scroll = clamp_scroll(selected, scroll, len(playlists), list_height)
+
+    marker_w = 2
+    name_w = w - 2 - marker_w
+    for i in range(list_height):
+        idx = scroll + i
+        if idx >= len(playlists):
+            break
+        if idx == selected:
+            marker, attr = "> ", curses.color_pair(CP_CYAN) | curses.A_BOLD
+        else:
+            marker, attr = "  ", curses.color_pair(CP_DEFAULT)
+        safe_addstr(stdscr, list_top + i, 1, marker + truncate(playlists[idx], name_w), attr)
+
+    count = f"{selected + 1}/{len(playlists)}"
+    for detail in (f"  {ARROWS} move  enter play  b back  q quit",
+                   f"  {ARROWS} move  enter play  b back",
+                   f"  {ARROWS} b back",
+                   ""):
+        if len(count) + len(detail) <= w - 2:
+            break
+    safe_addstr(stdscr, h - 1, 1, truncate(count + detail, w - 2), curses.color_pair(CP_ORANGE))
+    return scroll
 
 
 # --- Main TUI -----------------------------------------------------------------
@@ -447,19 +640,31 @@ def run_tui(stdscr):
         stdscr.erase()
         h, w = stdscr.getmaxyx()
 
-        # Minimum size guard
-        MIN_COLS, MIN_ROWS = 40, 16
-        if w < MIN_COLS or h < MIN_ROWS:
-            msg = "Terminal too small — please resize"
+        # Layout ladder: full -> compact -> "too small". Re-evaluated every frame
+        # so resizing switches layouts seamlessly in both directions.
+        if w < MIN_COMPACT_COLS or h < MIN_COMPACT_ROWS:
+            for msg in (f"Terminal too small {DASH} please resize", "Terminal too small", "too small"):
+                if len(msg) <= w - 1:
+                    break
+            msg = truncate(msg, w - 1)
             safe_addstr(stdscr, h // 2, max(0, (w - len(msg)) // 2), msg, curses.A_BOLD)
+            stdscr.refresh()
+            time.sleep(0.02)
+            continue
+
+        if w < MIN_COLS or h < MIN_ROWS:
+            if mode == Mode.MAIN:
+                draw_compact_main(stdscr, h, w, now_playing,
+                                  flash_msg if t < flash_until else "")
+            elif mode == Mode.PLAYLISTS:
+                pl_scroll = draw_compact_playlists(stdscr, h, w, playlists, pl_selected, pl_scroll)
             stdscr.refresh()
             time.sleep(0.02)
             continue
 
         # Title — truncate with ellipsis if terminal is narrow
         title_full = "Apple Music TUI (because GUI is for the weak)"
-        title = title_full if len(title_full) + 2 <= w else title_full[: w - 5] + "…"
-        safe_addstr(stdscr, 1, 2, title, curses.A_BOLD)
+        safe_addstr(stdscr, 1, 2, truncate(title_full, w - 3), curses.A_BOLD)
 
         if mode == Mode.MAIN:
             # Box around now playing section
@@ -476,7 +681,7 @@ def run_tui(stdscr):
                 if now_playing.album:
                     np_line += f"  [{now_playing.album}]"
             else:
-                np_line = "(nothing playing… or Music is being dramatic)"
+                np_line = f"(nothing playing{ELLIPSIS} or Music is being dramatic)"
 
             # inner_w: usable columns inside the box (borders + 1 space padding each side)
             inner_w = box_w - 4
@@ -553,19 +758,16 @@ def run_tui(stdscr):
                         safe_addstr(stdscr, row, 2, line, curses.color_pair(CP_ORANGE))
 
         elif mode == Mode.PLAYLISTS:
-            safe_addstr(stdscr, 2, 2, "Playlists (Enter to play, b/Esc to back, q to quit):", curses.A_BOLD)
+            header = "Playlists (Enter to play, b/Esc to back, q to quit):"
+            safe_addstr(stdscr, 2, 2, truncate(header, w - 3), curses.A_BOLD)
 
             if not playlists:
-                safe_addstr(stdscr, 4, 4, "(no playlists found… which is a lie, but here we are)")
+                empty = f"(no playlists found{ELLIPSIS} which is a lie, but here we are)"
+                safe_addstr(stdscr, 4, 4, truncate(empty, w - 5))
             else:
                 list_top = 4
                 list_height = max(3, h - list_top - 2)
-
-                if pl_selected < pl_scroll:
-                    pl_scroll = pl_selected
-                if pl_selected >= pl_scroll + list_height:
-                    pl_scroll = pl_selected - list_height + 1
-                pl_scroll = clamp(pl_scroll, 0, max(0, len(playlists) - list_height))
+                pl_scroll = clamp_scroll(pl_selected, pl_scroll, len(playlists), list_height)
 
                 for i in range(list_height):
                     idx = pl_scroll + i
@@ -576,9 +778,9 @@ def run_tui(stdscr):
                         attr = curses.color_pair(CP_CYAN) | curses.A_BOLD
                     else:
                         attr = curses.color_pair(CP_DEFAULT)
-                    safe_addstr(stdscr, list_top + i, 4, name, attr)
+                    safe_addstr(stdscr, list_top + i, 4, truncate(name, w - 5), attr)
 
-                footer = f"{pl_selected + 1}/{len(playlists)}  (↑↓ or j/k)"
+                footer = f"{pl_selected + 1}/{len(playlists)}  ({ARROWS} or j/k)"
                 safe_addstr(stdscr, h - 1, 2, footer, curses.color_pair(CP_ORANGE))
 
         stdscr.refresh()

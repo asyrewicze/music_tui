@@ -19,6 +19,7 @@ This project uses **Python**, **curses**, and **AppleScript (osascript)** to con
 - Repeat state display and cycling (off / one / all)
 - Transient flash notifications for user actions
 - Adaptive layout that adjusts to terminal width and height
+- Compact layout for small terminals, with a 3x3 dot-grid progress indicator in place of the progress bar
 - Keyboard controls for:
   - Play / pause toggle
   - Stop
@@ -30,6 +31,7 @@ This project uses **Python**, **curses**, and **AppleScript (osascript)** to con
   - Keyboard navigation
   - Play selected playlist
 - Pure terminal workflow (works well with tmux / Kitty panes)
+- ASCII fallback for terminals or fonts without good Unicode coverage
 
 ---
 
@@ -134,6 +136,52 @@ Without this permission, AppleScript commands will silently fail.
   - Playlist enumeration
 - Playlists are enumerated safely using manual AppleScript iteration to avoid list coercion issues
 - Folder playlists are excluded from the browser as they cannot be played directly
+
+### Layouts
+
+The UI picks one of three layouts each frame, based on the current terminal size:
+
+| Size | Layout |
+|---|---|
+| 40x16 and larger | Full layout -- boxed now-playing panel, horizontal progress bar, wrapped key menu |
+| 20x8 to 39x15 | Compact layout -- see below |
+| Smaller than 20x8 | "Terminal too small" message |
+
+The compact layout is eight rows -- title, blank, three dot-grid rows, blank, and
+two rows of controls:
+
+![music_tui compact layout](./images/music_tui_compact.png)
+
+The 3x3 dot grid is the progress indicator. It fills in reading order -- left to
+right, top to bottom -- one dot per ninth of the track, with the dot currently
+playing shown in bold. Elapsed/total time sits beside the first row, and the
+playback state plus shuffle/repeat symbols beside the second.
+
+The bottom two rows list every binding, four per row. They shorten as the terminal
+narrows -- the full words shown above, then abbreviations (`play`, `shuf`, `rep`),
+then tighter spacing, then bare keys once labels no longer fit (below 29 columns):
+
+```
+ ␣  n  p  s
+ f  r  l  q
+```
+
+The playlist browser works the same way in the compact layout: `l` opens a stripped
+list in the same reduced area, with names truncated with an ellipsis rather than
+clipped, and a footer showing position and the keys that fit.
+
+Resizing switches layouts in either direction with no restart, including while the
+playlist browser is open.
+
+The compact layout is purely a rendering path -- it reads the same cached state and does
+not change the polling cadence or add any osascript calls.
+
+Unicode glyphs (dots, shuffle/repeat symbols, ellipses) are used when the
+terminal encoding supports them. Set `MUSIC_TUI_ASCII=1` to force plain ASCII:
+
+```bash
+MUSIC_TUI_ASCII=1 ./music_tui.py
+```
 
 ### Timing Model
 
