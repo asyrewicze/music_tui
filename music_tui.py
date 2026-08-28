@@ -21,10 +21,11 @@ CP_YELLOW  = 4
 CP_RED     = 5
 CP_ORANGE  = 6
 
-# Layout ladder. At or above the first pair we draw the full layout; below it we
-# fall back to the compact layout; below the second pair there is nothing worth
-# drawing and we ask for a resize.
+# Layout ladder, checked in this order: full, then wide (too short for full but
+# wide enough that the dot grid wastes the space), then compact, then a plea to
+# resize. The wide floor is where all eight bindings fit on one labelled line.
 MIN_COLS, MIN_ROWS = 40, 16
+MIN_WIDE_COLS, MIN_WIDE_ROWS = 60, 5
 MIN_COMPACT_COLS, MIN_COMPACT_ROWS = 20, 8
 
 
@@ -51,10 +52,18 @@ GLYPH_STATE = (
     else {"playing": ">", "paused": "||", "stopped": "[]"}
 )
 
+# Hint ladder shared by the playlist and search-result lists.
+LIST_HINTS = (
+    f"  {ARROWS} move  enter play  b back  q quit",
+    f"  {ARROWS} move  enter play  b back",
+    f"  {ARROWS} b back",
+    "",
+)
+
 # Every binding, four per row, for the two-row compact hint block.
 COMPACT_KEYS = (
     ((SPACE_KEY, "play/pause", "play"), ("n", "next", "next"),
-     ("p", "prev", "prev"), ("s", "stop", "stop")),
+     ("p", "prev", "prev"), ("s", "search", "find")),
     (("f", "shuffle", "shuf"), ("r", "repeat", "rep"),
      ("l", "lists", "lists"), ("q", "quit", "quit")),
 )
@@ -66,7 +75,12 @@ DOTS_GAP = 2  # columns between dot centres
 DOTS_W = (DOTS_COLS - 1) * DOTS_GAP + 1  # rendered width of one dot row
 
 
-def run_osascript(script: str) -> str:
+def applescript_quote(s: str) -> str:
+    """Escape a Python string for interpolation into an AppleScript literal."""
+    return s.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def run_osascript(script: str, timeout: float = 5.0) -> str:
     """
     Execute AppleScript via osascript and return stdout (stripped).
     """
@@ -76,7 +90,7 @@ def run_osascript(script: str) -> str:
             capture_output=True,
             text=True,
             check=False,
-            timeout=5,
+            timeout=timeout,
         )
         return (p.stdout or "").strip()
     except (Exception, subprocess.TimeoutExpired):
@@ -178,10 +192,6 @@ def music_cmd_pause():
     run_osascript('tell application "Music" to pause')
 
 
-def music_cmd_stop():
-    run_osascript('tell application "Music" to stop')
-
-
 def music_cmd_next():
     run_osascript('tell application "Music" to next track')
 
@@ -196,7 +206,7 @@ def music_cmd_play_playlist(name: str):
     Note: if you have duplicate playlist names, Music may choose the first match.
     (We can upgrade to persistent IDs later if needed.)
     """
-    safe = name.replace('"', '\\"')
+    safe = applescript_quote(name)
     run_osascript(f'tell application "Music" to play user playlist "{safe}"')
 
 
@@ -233,6 +243,81 @@ end tell
 '''.strip()
     out = run_osascript(script)
     return out.strip().lower() == "true"
+
+
+# --- Search -------------------------------------------------------------------
+
+# Cap results so a broad query on a large library stays responsive to render.
+SEARCH_LIMIT = 200
+
+
+@dataclass
+class SearchResult:
+    persistent_id: str = ""
+    track: str = ""
+    artist: str = ""
+    album: str = ""
+
+
+def search_library(query: str) -> List[SearchResult]:
+    """
+    Search the library for tracks matching `query` by song name or artist.
+
+    One osascript call runs both searches; duplicates are removed here rather
+    than in AppleScript, where de-duping a list is quadratic.
+    """
+    query = " ".join(query.split())
+    if not query:
+        return []
+
+    safe = applescript_quote(query)
+    script = f'''
+tell application "Music"
+    set outText to ""
+    set res to {{}}
+    try
+        set res to res & (search library playlist 1 for "{safe}" only songs)
+    end try
+    try
+        set res to res & (search library playlist 1 for "{safe}" only artists)
+    end try
+    set n to 0
+    repeat with t in res
+        if n >= {SEARCH_LIMIT * 2} then exit repeat
+        try
+            set outText to outText & (persistent ID of t) & tab & (name of t as string) & tab & (artist of t as string) & tab & (album of t as string) & linefeed
+            set n to n + 1
+        end try
+    end repeat
+    return outText
+end tell
+'''.strip()
+
+    out = run_osascript(script, timeout=20.0)
+
+    results: List[SearchResult] = []
+    seen = set()
+    for line in out.splitlines():
+        parts = line.split("\t")
+        if len(parts) < 4:
+            continue
+        pid, track, artist, album = (p.strip() for p in parts[:4])
+        if not pid or pid in seen:
+            continue
+        seen.add(pid)
+        results.append(SearchResult(pid, track, artist, album))
+        if len(results) >= SEARCH_LIMIT:
+            break
+    return results
+
+
+def music_cmd_play_track(persistent_id: str):
+    """Play one library track by its persistent ID, which survives renames."""
+    safe = applescript_quote(persistent_id)
+    run_osascript(
+        'tell application "Music" to play (first track of library playlist 1 '
+        f'whose persistent ID is "{safe}")'
+    )
 
 
 # --- Playlists ----------------------------------------------------------------
@@ -278,6 +363,8 @@ end tell
 class Mode:
     MAIN = "main"
     PLAYLISTS = "playlists"
+    SEARCH_INPUT = "search_input"
+    SEARCH_RESULTS = "search_results"
 
 
 def format_time(seconds: float) -> str:
@@ -400,7 +487,7 @@ def compact_hint_rows(w: int) -> List[str]:
     the same form so the columns stay aligned.
     """
     budget = w - 2
-    for label_idx, gap in ((1, 2), (2, 2), (2, 1), (None, 2), (None, 1)):
+    for label_idx, gap in ((1, 2), (1, 1), (2, 2), (2, 1), (None, 2), (None, 1)):
         rows = [
             (" " * gap).join(
                 item[0] if label_idx is None else f"{item[0]} {item[label_idx]}"
@@ -466,41 +553,177 @@ def draw_compact_main(stdscr, h: int, w: int, np: NowPlaying, footer: str = ""):
             safe_addstr(stdscr, h - len(hint_rows) + i, 1, row, curses.color_pair(CP_ORANGE))
 
 
-def draw_compact_playlists(stdscr, h: int, w: int, playlists: List[str],
-                           selected: int, scroll: int) -> int:
-    """Stripped playlist list for the compact layout. Returns the adjusted scroll."""
-    safe_addstr(stdscr, 0, 1, truncate("Playlists:", w - 2), curses.A_BOLD)
+def pick_fitting(options, budget: int) -> str:
+    """First option that fits in `budget` columns, else the shortest one."""
+    for option in options:
+        if len(option) <= budget:
+            return option
+    return options[-1]
 
-    if not playlists:
-        safe_addstr(stdscr, 1, 1, truncate("(no playlists found)", w - 2))
+
+def draw_compact_list(stdscr, h: int, w: int, header: str, items: List[str],
+                      selected: int, scroll: int, empty_msg: str) -> int:
+    """Stripped scrolling list for the compact layout. Returns the adjusted scroll."""
+    safe_addstr(stdscr, 0, 1, truncate(header, w - 2), curses.A_BOLD)
+
+    if not items:
+        safe_addstr(stdscr, 1, 1, truncate(empty_msg, w - 2))
         return scroll
 
     # Derived from the header/footer actually drawn above and below.
     list_top = 1
     list_height = max(1, h - list_top - 1)
-    scroll = clamp_scroll(selected, scroll, len(playlists), list_height)
+    scroll = clamp_scroll(selected, scroll, len(items), list_height)
 
     marker_w = 2
     name_w = w - 2 - marker_w
     for i in range(list_height):
         idx = scroll + i
-        if idx >= len(playlists):
+        if idx >= len(items):
             break
         if idx == selected:
             marker, attr = "> ", curses.color_pair(CP_CYAN) | curses.A_BOLD
         else:
             marker, attr = "  ", curses.color_pair(CP_DEFAULT)
-        safe_addstr(stdscr, list_top + i, 1, marker + truncate(playlists[idx], name_w), attr)
+        safe_addstr(stdscr, list_top + i, 1, marker + truncate(items[idx], name_w), attr)
 
-    count = f"{selected + 1}/{len(playlists)}"
-    for detail in (f"  {ARROWS} move  enter play  b back  q quit",
-                   f"  {ARROWS} move  enter play  b back",
-                   f"  {ARROWS} b back",
-                   ""):
-        if len(count) + len(detail) <= w - 2:
-            break
-    safe_addstr(stdscr, h - 1, 1, truncate(count + detail, w - 2), curses.color_pair(CP_ORANGE))
+    count = f"{selected + 1}/{len(items)}"
+    footer = count + pick_fitting(LIST_HINTS, w - 2 - len(count))
+    safe_addstr(stdscr, h - 1, 1, truncate(footer, w - 2), curses.color_pair(CP_ORANGE))
     return scroll
+
+
+def draw_full_list(stdscr, h: int, w: int, header: str, items: List[str],
+                   selected: int, scroll: int, empty_msg: str) -> int:
+    """Scrolling list for the full layout. Returns the adjusted scroll."""
+    safe_addstr(stdscr, 2, 2, truncate(header, w - 3), curses.A_BOLD)
+
+    if not items:
+        safe_addstr(stdscr, 4, 4, truncate(empty_msg, w - 5))
+        return scroll
+
+    list_top = 4
+    list_height = max(3, h - list_top - 2)
+    scroll = clamp_scroll(selected, scroll, len(items), list_height)
+
+    for i in range(list_height):
+        idx = scroll + i
+        if idx >= len(items):
+            break
+        if idx == selected:
+            attr = curses.color_pair(CP_CYAN) | curses.A_BOLD
+        else:
+            attr = curses.color_pair(CP_DEFAULT)
+        safe_addstr(stdscr, list_top + i, 4, truncate(items[idx], w - 5), attr)
+
+    count = f"{selected + 1}/{len(items)}"
+    footer = count + pick_fitting(LIST_HINTS, w - 3 - len(count))
+    safe_addstr(stdscr, h - 1, 2, truncate(footer, w - 3), curses.color_pair(CP_ORANGE))
+    return scroll
+
+
+def search_input_line(query: str, width: int) -> str:
+    """Query plus a cursor block, scrolled to keep the tail visible."""
+    text = query + "_"
+    if len(text) <= width:
+        return text
+    return ELLIPSIS + text[-(width - 1):]
+
+
+def wide_hint(w: int) -> str:
+    """Every binding on one line, in the most legible form that fits."""
+    budget = w - 2
+    for label_idx, gap in ((1, 2), (1, 1), (2, 2), (2, 1), (None, 2), (None, 1)):
+        items = [
+            item[0] if label_idx is None else f"{item[0]} {item[label_idx]}"
+            for row in COMPACT_KEYS for item in row
+        ]
+        line = (" " * gap).join(items)
+        if len(line) <= budget:
+            return line
+    return line
+
+
+def draw_wide_main(stdscr, h: int, w: int, np: NowPlaying, footer: str = ""):
+    """Short-but-wide now-playing view.
+
+    Five rows: title, horizontal progress bar, one status line, a gap, then a
+    single bottom-anchored control line. Used when the terminal is too short for
+    the full layout but wide enough that the compact dot grid wastes the width.
+    """
+    if np.track or np.artist or np.album:
+        if np.artist and np.track:
+            line = f"{np.artist} {DASH} {np.track}"
+        else:
+            line = np.track or np.artist
+        if np.album:
+            line += f"  [{np.album}]"
+    else:
+        line = f"(nothing playing{ELLIPSIS} or Music is being dramatic)"
+    safe_addstr(stdscr, 0, 1, truncate(line, w - 2), curses.color_pair(CP_CYAN) | curses.A_BOLD)
+
+    bar_x = 1
+    bar_width = max(10, w - 5)
+    safe_addstr(stdscr, 1, bar_x, "[")
+    safe_addstr(stdscr, 1, bar_x + bar_width + 1, "]")
+    draw_progress_bar(stdscr, 1, bar_x + 1, bar_width, pos=np.position, dur=np.duration)
+
+    state_attr = (
+        curses.color_pair(CP_GREEN) if np.state == "playing" else
+        curses.color_pair(CP_YELLOW) if np.state == "paused" else
+        curses.color_pair(CP_RED)
+    )
+    left = max(0.0, np.duration - np.position)
+    times = f"{format_time(np.position)} / {format_time(np.duration)}"
+    remaining = f"(left: {format_time(left)})"
+    flags = []
+    if np.shuffle_enabled:
+        flags.append("shuffle")
+    if np.repeat != "off":
+        flags.append(f"repeat {np.repeat}")
+    flag_text = "  ".join(flags)
+
+    # Drop the least important segments first as the width shrinks.
+    green = curses.color_pair(CP_GREEN)
+    for parts in (
+        [(times, 0), (remaining, curses.A_DIM), (np.state, state_attr), (flag_text, green)],
+        [(times, 0), (np.state, state_attr), (flag_text, green)],
+        [(times, 0), (np.state, state_attr)],
+        [(times, 0)],
+    ):
+        parts = [seg for seg in parts if seg[0]]
+        if sum(len(t) for t, _ in parts) + 4 * (len(parts) - 1) <= w - 2:
+            break
+    x = 1
+    for text, attr in parts:
+        safe_addstr(stdscr, 2, x, text, attr)
+        x += len(text) + 4
+
+    if footer:
+        safe_addstr(stdscr, h - 1, 1, truncate(footer, w - 2),
+                    curses.color_pair(CP_CYAN) | curses.A_BOLD)
+    else:
+        safe_addstr(stdscr, h - 1, 1, wide_hint(w), curses.color_pair(CP_ORANGE))
+
+
+def draw_compact_search_input(stdscr, h: int, w: int, query: str, status: str):
+    """Query prompt for the compact layout."""
+    safe_addstr(stdscr, 0, 1, truncate("Search:", w - 2), curses.A_BOLD)
+    safe_addstr(stdscr, 1, 1, search_input_line(query, w - 2),
+                curses.color_pair(CP_CYAN) | curses.A_BOLD)
+    if status:
+        safe_addstr(stdscr, 3, 1, truncate(status, w - 2), curses.color_pair(CP_YELLOW))
+    hint = pick_fitting(("enter search  esc back", "enter  esc back", "ent esc"), w - 2)
+    safe_addstr(stdscr, h - 1, 1, hint, curses.color_pair(CP_ORANGE))
+
+
+def draw_centered_message(stdscr, msg: str):
+    """Immediate full-screen notice, used while a blocking call runs."""
+    h, w = stdscr.getmaxyx()
+    stdscr.erase()
+    msg = truncate(msg, w - 1)
+    safe_addstr(stdscr, h // 2, max(0, (w - len(msg)) // 2), msg, curses.A_BOLD)
+    stdscr.refresh()
 
 
 # --- Main TUI -----------------------------------------------------------------
@@ -529,6 +752,13 @@ def run_tui(stdscr):
     pl_selected = 0
     pl_scroll = 0
 
+    search_query = ""
+    search_status = ""
+    search_results: List[SearchResult] = []
+    search_lines: List[str] = []
+    search_selected = 0
+    search_scroll = 0
+
     last_poll = 0.0
     # "Truth" snapshot captured from Music.app at the last poll.
     np_at_poll = NowPlaying()
@@ -536,7 +766,7 @@ def run_tui(stdscr):
     # What we display (may be locally advanced between polls).
     now_playing = NowPlaying()
 
-    status_msg = "q quit | space play/pause | s stop | n next | p prev | f shuffle | r repeat | l playlists"
+    status_msg = "q quit | space play/pause | s search | n next | p prev | f shuffle | r repeat | l playlists"
     flash_msg = ""
     flash_until = 0.0
     menu_lines: List[str] = []
@@ -592,9 +822,9 @@ def run_tui(stdscr):
                     force_repoll()
                     flash("Paused" if now_playing.state == "playing" else "Playing")
                 elif ch in (ord("s"), ord("S")):
-                    music_cmd_stop()
-                    force_repoll()
-                    flash("Stopped")
+                    mode = Mode.SEARCH_INPUT
+                    search_query = ""
+                    search_status = ""
                 elif ch in (ord("n"), ord("N")):
                     music_cmd_next()
                     # Give Music a brief moment to advance tracks before sampling.
@@ -636,13 +866,67 @@ def run_tui(stdscr):
                         # Playlist selection is a user action; refresh immediately.
                         force_repoll(0.15)
 
+            elif mode == Mode.SEARCH_INPUT:
+                # Every printable key is query text here, so only Enter, Esc and
+                # Backspace are treated as controls -- q must not quit.
+                if ch in (curses.KEY_ENTER, 10, 13):
+                    if search_query.strip():
+                        draw_centered_message(stdscr, f"Searching{ELLIPSIS}")
+                        search_results = search_library(search_query)
+                        search_lines = [
+                            f"{r.track} {DASH} {r.artist}" if r.artist else r.track
+                            for r in search_results
+                        ]
+                        search_selected = 0
+                        search_scroll = 0
+                        curses.flushinp()  # drop keys typed during the blocking call
+                        if search_results:
+                            search_status = ""
+                            mode = Mode.SEARCH_RESULTS
+                        else:
+                            search_status = "No matches"
+                elif ch == 27:  # ESC
+                    mode = Mode.MAIN
+                elif ch in (curses.KEY_BACKSPACE, 127, 8):
+                    search_query = search_query[:-1]
+                    search_status = ""
+                elif 32 <= ch <= 126:
+                    search_query += chr(ch)
+                    search_status = ""
+
+            elif mode == Mode.SEARCH_RESULTS:
+                if ch in (ord("q"), ord("Q")):
+                    break
+                elif ch in (ord("b"), ord("B"), 27):  # back to refine the query
+                    mode = Mode.SEARCH_INPUT
+                elif ch in (curses.KEY_UP, ord("k")):
+                    search_selected = clamp(search_selected - 1, 0, max(0, len(search_results) - 1))
+                elif ch in (curses.KEY_DOWN, ord("j")):
+                    search_selected = clamp(search_selected + 1, 0, max(0, len(search_results) - 1))
+                elif ch in (curses.KEY_ENTER, 10, 13):
+                    if search_results:
+                        chosen = search_results[search_selected]
+                        music_cmd_play_track(chosen.persistent_id)
+                        mode = Mode.MAIN
+                        flash(f"Playing: {chosen.track}")
+                        force_repoll(0.15)
+
         # Draw
         stdscr.erase()
         h, w = stdscr.getmaxyx()
 
-        # Layout ladder: full -> compact -> "too small". Re-evaluated every frame
-        # so resizing switches layouts seamlessly in both directions.
-        if w < MIN_COMPACT_COLS or h < MIN_COMPACT_ROWS:
+        # Layout ladder: full -> wide -> compact -> "too small". Re-evaluated every
+        # frame so resizing switches layouts seamlessly in every direction.
+        if w >= MIN_COLS and h >= MIN_ROWS:
+            layout = "full"
+        elif w >= MIN_WIDE_COLS and h >= MIN_WIDE_ROWS:
+            layout = "wide"
+        elif w >= MIN_COMPACT_COLS and h >= MIN_COMPACT_ROWS:
+            layout = "compact"
+        else:
+            layout = "tiny"
+
+        if layout == "tiny":
             for msg in (f"Terminal too small {DASH} please resize", "Terminal too small", "too small"):
                 if len(msg) <= w - 1:
                     break
@@ -652,12 +936,21 @@ def run_tui(stdscr):
             time.sleep(0.02)
             continue
 
-        if w < MIN_COLS or h < MIN_ROWS:
+        if layout in ("wide", "compact"):
+            # Only the now-playing view differs; the list views are already
+            # height-efficient and adapt to whatever width they are given.
             if mode == Mode.MAIN:
-                draw_compact_main(stdscr, h, w, now_playing,
-                                  flash_msg if t < flash_until else "")
+                draw_main = draw_wide_main if layout == "wide" else draw_compact_main
+                draw_main(stdscr, h, w, now_playing,
+                          flash_msg if t < flash_until else "")
             elif mode == Mode.PLAYLISTS:
-                pl_scroll = draw_compact_playlists(stdscr, h, w, playlists, pl_selected, pl_scroll)
+                pl_scroll = draw_compact_list(stdscr, h, w, "Playlists:", playlists,
+                                              pl_selected, pl_scroll, "(no playlists found)")
+            elif mode == Mode.SEARCH_INPUT:
+                draw_compact_search_input(stdscr, h, w, search_query, search_status)
+            elif mode == Mode.SEARCH_RESULTS:
+                search_scroll = draw_compact_list(stdscr, h, w, "Results:", search_lines,
+                                                  search_selected, search_scroll, "(no matches)")
             stdscr.refresh()
             time.sleep(0.02)
             continue
@@ -758,30 +1051,30 @@ def run_tui(stdscr):
                         safe_addstr(stdscr, row, 2, line, curses.color_pair(CP_ORANGE))
 
         elif mode == Mode.PLAYLISTS:
-            header = "Playlists (Enter to play, b/Esc to back, q to quit):"
-            safe_addstr(stdscr, 2, 2, truncate(header, w - 3), curses.A_BOLD)
+            pl_scroll = draw_full_list(
+                stdscr, h, w,
+                "Playlists (Enter to play, b/Esc to back, q to quit):",
+                playlists, pl_selected, pl_scroll,
+                f"(no playlists found{ELLIPSIS} which is a lie, but here we are)",
+            )
 
-            if not playlists:
-                empty = f"(no playlists found{ELLIPSIS} which is a lie, but here we are)"
-                safe_addstr(stdscr, 4, 4, truncate(empty, w - 5))
-            else:
-                list_top = 4
-                list_height = max(3, h - list_top - 2)
-                pl_scroll = clamp_scroll(pl_selected, pl_scroll, len(playlists), list_height)
+        elif mode == Mode.SEARCH_INPUT:
+            safe_addstr(stdscr, 2, 2, truncate("Search library (Enter to run, Esc to cancel):", w - 3),
+                        curses.A_BOLD)
+            safe_addstr(stdscr, 4, 4, search_input_line(search_query, w - 6),
+                        curses.color_pair(CP_CYAN) | curses.A_BOLD)
+            if search_status:
+                safe_addstr(stdscr, 6, 4, truncate(search_status, w - 5), curses.color_pair(CP_YELLOW))
+            safe_addstr(stdscr, h - 1, 2, truncate("Matches song and artist names", w - 3),
+                        curses.color_pair(CP_ORANGE))
 
-                for i in range(list_height):
-                    idx = pl_scroll + i
-                    if idx >= len(playlists):
-                        break
-                    name = playlists[idx]
-                    if idx == pl_selected:
-                        attr = curses.color_pair(CP_CYAN) | curses.A_BOLD
-                    else:
-                        attr = curses.color_pair(CP_DEFAULT)
-                    safe_addstr(stdscr, list_top + i, 4, truncate(name, w - 5), attr)
-
-                footer = f"{pl_selected + 1}/{len(playlists)}  ({ARROWS} or j/k)"
-                safe_addstr(stdscr, h - 1, 2, footer, curses.color_pair(CP_ORANGE))
+        elif mode == Mode.SEARCH_RESULTS:
+            search_scroll = draw_full_list(
+                stdscr, h, w,
+                "Search results (Enter to play, b/Esc to refine, q to quit):",
+                search_lines, search_selected, search_scroll,
+                "(no matches)",
+            )
 
         stdscr.refresh()
         time.sleep(0.02)

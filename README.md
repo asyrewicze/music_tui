@@ -20,6 +20,7 @@ This project uses **Python**, **curses**, and **AppleScript (osascript)** to con
 - Transient flash notifications for user actions
 - Adaptive layout that adjusts to terminal width and height
 - Compact layout for small terminals, with a 3x3 dot-grid progress indicator in place of the progress bar
+- Wide layout for short-but-wide terminals, keeping the horizontal bar and putting every control on one line
 - Keyboard controls for:
   - Play / pause toggle
   - Stop
@@ -30,6 +31,10 @@ This project uses **Python**, **curses**, and **AppleScript (osascript)** to con
   - Enumerates user playlists (folder playlists excluded)
   - Keyboard navigation
   - Play selected playlist
+- Library search
+  - Matches song names and artist names in one pass
+  - Keyboard navigation of results
+  - Plays the selected track by persistent ID, so renames do not break it
 - Pure terminal workflow (works well with tmux / Kitty panes)
 - ASCII fallback for terminals or fonts without good Unicode coverage
 
@@ -90,7 +95,7 @@ The Music app does not need to be running beforehand; macOS will launch it autom
 | Space | Play / pause toggle |
 | n | Next track |
 | p | Previous track |
-| s | Stop |
+| s | Search the library |
 | f | Toggle shuffle |
 | r | Cycle repeat mode (off / one / all) |
 | l | Open playlist browser |
@@ -104,6 +109,28 @@ The Music app does not need to be running beforehand; macOS will launch it autom
 | j / k | Navigate playlists (Vim-style) |
 | Enter | Play selected playlist |
 | b or Esc | Return to main view |
+| q | Quit |
+
+### Search
+
+Pressing `s` opens a query prompt. While typing, every printable key is treated as
+query text -- `q` types a `q` rather than quitting.
+
+| Key | Action |
+|---|---|
+| (any printable key) | Add to the query |
+| Backspace | Delete the last character |
+| Enter | Run the search |
+| Esc | Cancel, back to main view |
+
+Once results are listed:
+
+| Key | Action |
+|---|---|
+| Up / Down | Navigate results |
+| j / k | Navigate results (Vim-style) |
+| Enter | Play the selected track |
+| b or Esc | Back to the query, to refine it |
 | q | Quit |
 
 ---
@@ -134,21 +161,45 @@ Without this permission, AppleScript commands will silently fail.
   - Playback position
   - Shuffle and repeat state
   - Playlist enumeration
+  - Library search by song name and artist name
 - Playlists are enumerated safely using manual AppleScript iteration to avoid list coercion issues
 - Folder playlists are excluded from the browser as they cannot be played directly
+- Search runs both a song-name and an artist-name pass in a single osascript call, then
+  de-duplicates by persistent ID in Python (de-duping a list in AppleScript is quadratic)
+- Search results are played by persistent ID rather than by name, so duplicate or renamed
+  titles still resolve to the exact track you picked
 
 ### Layouts
 
-The UI picks one of three layouts each frame, based on the current terminal size:
+The UI picks one of four layouts each frame, based on the current terminal size.
+They are tested in this order, so the first one that fits wins:
 
-| Size | Layout |
+| Condition | Layout |
 |---|---|
-| 40x16 and larger | Full layout -- boxed now-playing panel, horizontal progress bar, wrapped key menu |
-| 20x8 to 39x15 | Compact layout -- see below |
-| Smaller than 20x8 | "Terminal too small" message |
+| 40 cols and 16 rows or more | **Full** -- boxed now-playing panel, horizontal progress bar, wrapped key menu |
+| 60 cols and 5 rows or more | **Wide** -- too short for the full layout, but wide enough that the dot grid would waste the space |
+| 20 cols and 8 rows or more | **Compact** -- see below |
+| anything smaller | "Terminal too small" message |
 
-The compact layout is eight rows -- title, blank, three dot-grid rows, blank, and
-two rows of controls:
+### Wide layout
+
+Five rows: title, a normal horizontal progress bar, one status line, a gap, and a
+single control line at the bottom.
+
+![music_tui wide layout](./images/music_tui_wide.png)
+
+The status line drops its least important segments as the width shrinks -- time
+remaining goes first, then the shuffle/repeat flags (shown only when they are on, so
+neither appears above). The control line uses the same
+label ladder as the compact layout, just on one row instead of two. 60 columns is the
+floor because that is where all eight bindings still fit with readable labels.
+
+The list views (playlists, search) are shared with the compact layout -- they are
+already height-efficient and simply use whatever width they are given.
+
+### Compact layout
+
+Eight rows -- title, blank, three dot-grid rows, blank, and two rows of controls:
 
 ![music_tui compact layout](./images/music_tui_compact.png)
 
@@ -158,8 +209,9 @@ playing shown in bold. Elapsed/total time sits beside the first row, and the
 playback state plus shuffle/repeat symbols beside the second.
 
 The bottom two rows list every binding, four per row. They shorten as the terminal
-narrows -- the full words shown above, then abbreviations (`play`, `shuf`, `rep`),
-then tighter spacing, then bare keys once labels no longer fit (below 29 columns):
+narrows -- full words, then full words with tighter spacing, then abbreviations
+(`play`, `find`, `shuf`, `rep`), then bare keys once labels stop fitting at all
+(below 29 columns):
 
 ```
  ␣  n  p  s
@@ -170,8 +222,8 @@ The playlist browser works the same way in the compact layout: `l` opens a strip
 list in the same reduced area, with names truncated with an ellipsis rather than
 clipped, and a footer showing position and the keys that fit.
 
-Resizing switches layouts in either direction with no restart, including while the
-playlist browser is open.
+Resizing moves between all four layouts with no restart, in any direction, including
+while the playlist browser or a search is open.
 
 The compact layout is purely a rendering path -- it reads the same cached state and does
 not change the polling cadence or add any osascript calls.
@@ -200,14 +252,21 @@ This approach uses Apple's supported automation interfaces and is resilient acro
 
 - macOS only (depends on AppleScript)
 - No album art (ncurses is character-cell based)
-- Playlist selection is name-based (duplicate playlist names may resolve unpredictably)
+- Playlist selection is name-based (duplicate playlist names may resolve unpredictably); search
+  results are not, and use persistent IDs
+- Search matches song and artist names only -- not albums or composers -- and is capped at 200
+  results
+- Search queries accept printable ASCII only; accented characters cannot be typed into the
+  query (searching for a substring without them usually still matches)
+- A search blocks the UI while it runs, since the app is single-threaded
 - No audio visualizer (AppleScript does not provide access to the audio stream)
 
 ---
 
 ## Possible Future Enhancements
 
-- Playlist search and filtering
+- Filtering within the playlist browser
+- Album and composer search areas
 - Volume control
 - Persistent state (last playlist, last view)
 - Playing by persistent playlist ID instead of name
